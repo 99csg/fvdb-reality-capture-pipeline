@@ -4,8 +4,8 @@ venv/
 # 출력 결과물 (대용량)
 output/
 
-# # 입력 데이터 (대용량 영상)
-# data/
+# 입력 데이터 (대용량 영상)
+data/
 
 # fvdb-reality-capture 소스 (별도 클론 필요)
 fvdb-reality-capture/
@@ -33,3 +33,4 @@ Thumbs.db
 
 # Docker
 .dockerignore
+frgs_logs/
