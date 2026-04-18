@@ -11,15 +11,28 @@
 #   fps           : 프레임 추출 FPS (기본값: 2, 더 촘촘한 캡처는 3-5 권장)
 #
 # 파이프라인 단계:
-#   1. 프레임 추출         (ffmpeg)
-#   2. SfM 재구성          (COLMAP)
-#   3. Gaussian Splat 학습 (frgs reconstruct)
-#   4. 삼각 메쉬 추출      (frgs mesh-basic)
-#   5. USDZ 변환           (mesh_to_usdz.py)
+#   1.  프레임 추출              (ffmpeg)
+#   1.5 객체 제거 [선택 사항]    (SAM2 + OpenCV inpainting)
+#   2.  SfM 재구성               (COLMAP)
+#   3.  Gaussian Splat 학습      (frgs reconstruct)
+#   4.  삼각 메쉬 추출           (frgs mesh-basic)
+#   5.  USDZ 변환                (mesh_to_usdz.py)
+#
+# 객체 제거 활성화:
+#   REMOVE_OBJECTS=1 REMOVE_POINTS="320,240" REMOVE_LABELS="1" \
+#       bash pipeline.sh video.mp4
+#
+#   환경 변수:
+#     REMOVE_OBJECTS    : 1 이면 활성화 (기본: 0)
+#     REMOVE_POINTS     : 포인트 좌표 (예: "320,240" 또는 "320,240 410,310")
+#     REMOVE_LABELS     : 포인트 레이블 (예: "1" 또는 "1 0")
+#     SAM2_CHECKPOINT   : SAM2 체크포인트 경로 (기본: ./checkpoints/sam2.1_hiera_large.pt)
+#     SAM2_MODEL_CFG    : SAM2 모델 설정 (기본: configs/sam2.1/sam2.1_hiera_large.yaml)
 #
 # 전제조건:
 #   - bash setup.sh 를 먼저 실행해 가상환경(./venv)을 구성하세요.
 #   - ffmpeg, colmap 이 시스템에 설치되어 있어야 합니다.
+#   - 객체 제거 사용 시: bash download_sam2_checkpoint.sh 로 체크포인트를 받으세요.
 # =============================================================================
 set -euo pipefail
 
@@ -32,6 +45,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv"
 REPO_DIR="$SCRIPT_DIR/fvdb-reality-capture"
 MESH_TO_USDZ="$SCRIPT_DIR/mesh_to_usdz.py"
+REMOVE_OBJECTS_SCRIPT="$SCRIPT_DIR/remove_objects.py"
+
+# ── 객체 제거 설정 (환경 변수로 제어) ────────────────────────────────────────
+REMOVE_OBJECTS="${REMOVE_OBJECTS:-0}"
+REMOVE_POINTS="${REMOVE_POINTS:-}"
+REMOVE_LABELS="${REMOVE_LABELS:-1}"
+SAM2_CHECKPOINT="${SAM2_CHECKPOINT:-$SCRIPT_DIR/checkpoints/sam2.1_hiera_large.pt}"
+SAM2_MODEL_CFG="${SAM2_MODEL_CFG:-configs/sam2.1/sam2.1_hiera_large.yaml}"
 
 # ── 입력 검증 ─────────────────────────────────────────────────────────────────
 if [ -z "$INPUT_VIDEO" ]; then
@@ -66,7 +87,8 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # 각 단계 디렉토리
-FRAMES_DIR="$OUTPUT_DIR/images_raw"        # COLMAP이 기대하는 이름
+FRAMES_DIR="$OUTPUT_DIR/images_raw"        # 원본 추출 프레임
+CLEAN_DIR="$OUTPUT_DIR/images_clean"       # 객체 제거 후 프레임 (사용 시)
 COLMAP_DIR="$OUTPUT_DIR"                    # COLMAP workspace
 SPLAT_PATH="$OUTPUT_DIR/splat.ply"         # Gaussian splat (PLY 포맷)
 MESH_PATH="$OUTPUT_DIR/mesh.ply"           # 추출된 메쉬
@@ -87,6 +109,11 @@ echo "============================================================"
 echo " 입력 비디오  : $INPUT_VIDEO"
 echo " 출력 디렉토리: $OUTPUT_DIR"
 echo " 추출 FPS     : $EXTRACT_FPS"
+if [ "$REMOVE_OBJECTS" -eq 1 ]; then
+echo " 객체 제거    : 활성화 (포인트: $REMOVE_POINTS / 레이블: $REMOVE_LABELS)"
+else
+echo " 객체 제거    : 비활성화 (REMOVE_OBJECTS=1 로 활성화)"
+fi
 echo " 로그 파일    : $LOG_PATH"
 echo "============================================================"
 
@@ -133,6 +160,51 @@ if [ "$FRAME_COUNT" -gt "$COLMAP_MAX_FRAMES" ]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
+# STEP 1.5: SAM2 객체 제거 (선택 사항)
+# ────────────────────────────────────────────────────────────────────────────
+# COLMAP이 사용할 이미지 경로 – 기본은 images_raw/, 객체 제거 시 images_clean/
+COLMAP_IMAGE_PATH="$FRAMES_DIR"
+
+if [ "${REMOVE_OBJECTS:-0}" -eq 1 ]; then
+    step "STEP 1.5: SAM2 객체 제거"
+
+    if [ -z "$REMOVE_POINTS" ]; then
+        echo "오류: REMOVE_OBJECTS=1 이지만 REMOVE_POINTS 가 설정되지 않았습니다."
+        echo "  예시: REMOVE_POINTS=\"320,240\" REMOVE_LABELS=\"1\" bash pipeline.sh ..."
+        exit 1
+    fi
+
+    if [ ! -f "$SAM2_CHECKPOINT" ]; then
+        echo "오류: SAM2 체크포인트를 찾을 수 없습니다: $SAM2_CHECKPOINT"
+        echo "  다운로드: bash download_sam2_checkpoint.sh"
+        exit 1
+    fi
+
+    CLEAN_DONE_MARKER="$OUTPUT_DIR/.remove_objects_done"
+    if [ -f "$CLEAN_DONE_MARKER" ] && [ -d "$CLEAN_DIR" ]; then
+        log "이미 완료된 객체 제거 결과 발견 – 건너뜁니다."
+    else
+        log "SAM2 마스크 생성 및 인페인팅 중..."
+        log "  포인트  : $REMOVE_POINTS"
+        log "  레이블  : $REMOVE_LABELS"
+        log "  체크포인트: $SAM2_CHECKPOINT"
+
+        python3 "$REMOVE_OBJECTS_SCRIPT" \
+            --frames_dir "$FRAMES_DIR" \
+            --out_dir    "$CLEAN_DIR" \
+            --points     "$REMOVE_POINTS" \
+            --labels     "$REMOVE_LABELS" \
+            --checkpoint "$SAM2_CHECKPOINT" \
+            --model_cfg  "$SAM2_MODEL_CFG"
+
+        touch "$CLEAN_DONE_MARKER"
+        log "✓ 객체 제거 완료: $CLEAN_DIR"
+    fi
+
+    COLMAP_IMAGE_PATH="$CLEAN_DIR"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
 # STEP 2: COLMAP 구조-운동 복원 (SfM)
 # ────────────────────────────────────────────────────────────────────────────
 step "STEP 2/5: COLMAP SfM 재구성"
@@ -144,9 +216,11 @@ if [ -f "$COLMAP_DONE_MARKER" ]; then
 else
     log "COLMAP feature extraction & matching & mapping 실행 중..."
     log "(이 단계는 프레임 수에 따라 수십 분 ~ 수 시간이 걸릴 수 있습니다)"
+    log "  이미지 경로: $COLMAP_IMAGE_PATH"
 
     python3 "$COLMAP_SCRIPT" \
         --source_path "$COLMAP_DIR" \
+        --image_path  "$COLMAP_IMAGE_PATH" \
         --no_gpu \
         --camera OPENCV \
         --max_sift_features 8192 \

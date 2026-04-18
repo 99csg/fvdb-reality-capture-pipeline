@@ -52,8 +52,14 @@ RUN pip install \
     /workspace/fvdb-reality-capture \
     --quiet
 
+# ── SAM2 (객체 제거 모듈) ─────────────────────────────────────────────────────
+RUN pip install sam2 --quiet
+
 # ── 파이프라인 스크립트 복사 ──────────────────────────────────────────────────
-COPY pipeline.sh run_colmap.py mesh_to_usdz.py /workspace/
+COPY pipeline.sh run_colmap.py mesh_to_usdz.py remove_objects.py download_sam2_checkpoint.sh /workspace/
+
+# SAM2 체크포인트 디렉토리 (호스트에서 마운트하거나 빌드 후 직접 다운로드)
+RUN mkdir -p /workspace/checkpoints
 
 # 출력 마운트 포인트
 RUN mkdir -p /workspace/output

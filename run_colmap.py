@@ -48,9 +48,19 @@ parser.add_argument("--max_sift_features", default=20000, type=int, help="Maximu
 parser.add_argument("--sift_threads", default=14, type=int, help="Number of threads for SIFT extraction")
 parser.add_argument("--mask_path", default=None, type=str, help="Path to image masks directory")
 parser.add_argument("--random_seed", default=None, type=int, help="Random seed for deterministic reconstruction")
+parser.add_argument(
+    "--image_path",
+    default=None,
+    type=str,
+    help="입력 이미지 디렉토리 경로 (기본값: <source_path>/images_raw). "
+         "remove_objects.py 로 전처리한 images_clean/ 디렉토리를 지정할 때 사용.",
+)
 
 args = parser.parse_args()
 colmap_command = args.colmap_executable if args.colmap_executable else "colmap"
+
+# --image_path 가 지정되지 않으면 <source_path>/images_raw 를 기본값으로 사용
+image_path = args.image_path if args.image_path else os.path.join(args.source_path, "images_raw")
 use_gpu = 0 if args.no_gpu else 1
 
 single_camera_tag = "single_camera"
@@ -78,7 +88,7 @@ if not args.skip_features:
     feat_extracton_cmd = (
         f"{colmap_command} feature_extractor "
         f"--database_path {args.source_path}/database.db "
-        f"--image_path {args.source_path}/images_raw "
+        f"--image_path {image_path} "
         f"--ImageReader.camera_model {args.camera} "
         f"--ImageReader.{single_camera_tag} 1 "
         f"--SiftExtraction.use_gpu {use_gpu} "
@@ -118,7 +128,7 @@ if not args.skip_ba:
         mapper_cmd = (
             f"{colmap_command} mapper "
             f"--database_path {args.source_path}/database.db "
-            f"--image_path {args.source_path}/images_raw "
+            f"--image_path {image_path} "
             f"--output_path {sparse_fn} "
             f"--Mapper.ba_global_max_num_iterations 50"
         )
@@ -131,7 +141,7 @@ if not args.skip_ba:
         mapper_cmd = (
             f"{colmap_command} hierarchical_mapper "
             f"--database_path {args.source_path}/database.db "
-            f"--image_path {args.source_path}/images_raw "
+            f"--image_path {image_path} "
             f"--output_path {sparse_fn} "
             f"--Mapper.tri_min_angle 0.75"
         )
@@ -162,7 +172,7 @@ if args.refine_ba:
             f"{colmap_command} point_triangulator "
             f"--input_path {ba_fn} "
             f"--database_path {args.source_path}/database.db "
-            f"--image_path {args.source_path}/images_raw "
+            f"--image_path {image_path} "
             f"--output_path {ba_fn} "
             f"--Mapper.tri_min_angle 0.75"
         )
@@ -219,7 +229,7 @@ if args.geoalign or args.align:
 log.info("Starting image undistortion...")
 undistort_cmd = (
     f"{colmap_command} image_undistorter "
-    f"--image_path {args.source_path}/images_raw "
+    f"--image_path {image_path} "
     f"--input_path {ba_fn} "
     f"--output_path {args.source_path} "
     f"--output_type COLMAP "

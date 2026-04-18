@@ -9,7 +9,11 @@
 #   2. PyTorch 2.10.0 + CUDA 12.8 설치
 #   3. fvdb-core 0.4.2 (pt210 / cu128) 설치
 #   4. fvdb-reality-capture 소스 설치
-#   5. 기타 의존성 (ffmpeg, point-cloud-utils 등)
+#   5. SAM2 (객체 제거 모듈 의존성) 설치
+#   6. 기타 의존성 (ffmpeg, point-cloud-utils 등)
+#
+# 객체 제거 사용 시 SAM2 체크포인트도 다운로드하세요:
+#   bash download_sam2_checkpoint.sh
 # =============================================================================
 set -euo pipefail
 
@@ -24,7 +28,7 @@ echo "============================================================"
 
 # --- 1. 필수 시스템 패키지 확인 ---
 echo ""
-echo "[1/5] 시스템 의존성 확인..."
+echo "[1/6] 시스템 의존성 확인..."
 for cmd in ffmpeg colmap python3; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "  오류: '$cmd' 를 찾을 수 없습니다."
@@ -40,7 +44,7 @@ done
 
 # --- 2. 가상환경 생성 ---
 echo ""
-echo "[2/5] Python 가상환경 생성: $VENV_DIR"
+echo "[2/6] Python 가상환경 생성: $VENV_DIR"
 if [ -d "$VENV_DIR" ]; then
     echo "  이미 존재합니다. 재사용합니다."
 else
@@ -67,7 +71,7 @@ fi
 
 # --- 3. PyTorch 2.10.0 + CUDA 12.8 설치 ---
 echo ""
-echo "[3/5] PyTorch 2.10.0 (CUDA 12.8) 설치..."
+echo "[3/6] PyTorch 2.10.0 (CUDA 12.8) 설치..."
 TORCH_INDEX="https://download.pytorch.org/whl/cu128"
 
 INSTALLED_TORCH=$(pip show torch 2>/dev/null | grep "^Version:" | awk '{print $2}' || true)
@@ -84,7 +88,7 @@ fi
 
 # --- 4. fvdb-core 설치 ---
 echo ""
-echo "[4/5] fvdb-core 0.4.2 (pt210/cu128) 설치..."
+echo "[4/6] fvdb-core 0.4.2 (pt210/cu128) 설치..."
 FVDB_INDEX="https://d36m13axqqhiit.cloudfront.net/simple"
 
 INSTALLED_FVDB=$(pip show fvdb-core 2>/dev/null | grep "^Version:" | awk '{print $2}' || true)
@@ -100,7 +104,7 @@ fi
 
 # --- 5. fvdb-reality-capture 및 나머지 의존성 설치 ---
 echo ""
-echo "[5/5] fvdb-reality-capture 소스 설치..."
+echo "[5/6] fvdb-reality-capture 소스 설치..."
 if [ ! -d "$REPO_DIR" ]; then
     echo "  오류: fvdb-reality-capture 소스가 없습니다: $REPO_DIR"
     echo "  먼저 'git clone https://github.com/openvdb/fvdb-reality-capture.git' 를 실행하세요."
@@ -115,6 +119,22 @@ pip install \
 
 echo "  ✓ fvdb-reality-capture 설치 완료"
 
+# --- 6. SAM2 설치 (객체 제거 모듈) ---
+echo ""
+echo "[6/6] SAM2 (객체 제거 모듈) 설치..."
+
+INSTALLED_SAM2=$(pip show sam2 2>/dev/null | grep "^Version:" | awk '{print $2}' || true)
+if [ -n "$INSTALLED_SAM2" ]; then
+    echo "  ✓ sam2 이미 설치됨 (버전: $INSTALLED_SAM2)"
+else
+    pip install sam2 --quiet
+    echo "  ✓ sam2 설치 완료"
+fi
+
+echo ""
+echo "  SAM2 체크포인트 다운로드 (객체 제거 사용 시 필요):"
+echo "    bash download_sam2_checkpoint.sh"
+
 # --- 설치 검증 ---
 echo ""
 echo "============================================================"
@@ -125,6 +145,7 @@ python3 -c "import torch; print(f'  CUDA 사용 가능: {torch.cuda.is_available
 python3 -c "import fvdb; print(f'  fvdb: OK')"
 python3 -c "from pxr import Usd; print(f'  USD (usd-core): OK')"
 python3 -c "import fvdb_reality_capture; print(f'  fvdb-reality-capture: OK')"
+python3 -c "import sam2; print(f'  sam2: OK')" 2>/dev/null || echo "  sam2: 설치 필요"
 echo "  frgs 실행 경로: $(which frgs 2>/dev/null || echo '없음')"
 
 echo ""
@@ -134,4 +155,9 @@ echo ""
 echo " 파이프라인 실행:"
 echo "   source venv/bin/activate"
 echo "   bash pipeline.sh <입력_비디오.mp4> [출력_디렉토리]"
+echo ""
+echo " 객체 제거 기능 사용:"
+echo "   bash download_sam2_checkpoint.sh   # 체크포인트 다운로드"
+echo "   REMOVE_OBJECTS=1 REMOVE_POINTS=\"320,240\" REMOVE_LABELS=\"1\" \\"
+echo "       bash pipeline.sh <입력_비디오.mp4>"
 echo "============================================================"
